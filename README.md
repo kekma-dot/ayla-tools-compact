@@ -7,7 +7,7 @@
 Compact, one-line tool rows for [Pi](https://pi.dev) — a rendering-only extension for
 `bash`, `read`, `grep`, `find`, and `ls`.
 
-> **Status: public beta (`0.1.0-beta.1`).** Verified against Pi `1.3.0`. See
+> **Status: public beta (`0.1.0-beta.2`).** Verified against Pi `1.3.0` only. See
 > [Compatibility](#compatibility) for what that claim does and does not cover.
 
 Instead of a full-width colored block per tool call, every call becomes a single row:
@@ -39,11 +39,13 @@ live; file-oriented tools show the **head**.
 | Not changed | Tool names, descriptions, parameter schemas, execution, permissions, result payloads, session storage. |
 | Not covered | `edit`, `write`, and every other tool keep Pi's default rendering. |
 
-The extension registers tool definitions with the same public names as Pi's built-ins
-and reuses Pi's own built-in definitions for schema and execution. It deliberately does
-not reimplement the tools: the same code paths, cwd handling, and error results run as
-before. Pi's tool registry lets a registered definition take precedence over the
-built-in of the same name, which is the only mechanism used here.
+The extension registers no tools at all. It registers one **renderer resolver** through
+Pi's public `pi.registerToolRenderer` hook: for the five names above it returns a compact
+`renderCall`/`renderResult` with `renderShell: "self"`, and for every other name it
+calls `next()`, so the rest of the chain decides. Execution, parameter schemas, exposure,
+annotations, and the active tool set are never touched, which also means a custom or
+sandboxed `bash` registered by another extension keeps its own definition and executor
+and only gains the compact row.
 
 ## Install
 
@@ -51,20 +53,17 @@ Requires a working Pi installation. The extension itself has no runtime dependen
 `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` are host-provided peers.
 
 ```bash
-# npm (after the beta is published)
-pi install npm:ayla-tools-compact@0.1.0-beta.1
-
-# git (pin a commit or tag in real use)
-pi install git:github.com/kekma-dot/ayla-tools-compact@<commit>
-
-# local checkout
-pi install ./ayla-tools-compact
+pi install git:github.com/kekma-dot/ayla-tools-compact
 ```
+
+Restart Pi after installation. This package is not published to npm. For reproducible
+installs, append `@<commit>` to the Git source using a verified release commit. A local
+checkout also works: `pi install ./ayla-tools-compact`.
 
 Try it for one session without adding it to settings:
 
 ```bash
-pi -e npm:ayla-tools-compact@0.1.0-beta.1
+pi -e git:github.com/kekma-dot/ayla-tools-compact
 ```
 
 `pi list` shows configured packages. Personal installs land in `~/.pi/agent/settings.json`;
@@ -76,18 +75,18 @@ is granted.
 ```bash
 PI_GLAM_TOOLS=0 pi                 # one run, nothing drawn by this extension
 pi config                          # toggle the package's extension interactively
-pi remove npm:ayla-tools-compact   # remove the package declaration
+pi remove git:github.com/kekma-dot/ayla-tools-compact  # remove the package declaration
 ```
 
 The environment switch is named `PI_GLAM_TOOLS` for compatibility with earlier installs
-and is intentionally stable; `PI_GLAM_TOOLS=0` makes the extension register no tools, so
-Pi's default rendering is used unchanged. To keep the package installed but load none of
+and is intentionally stable; `PI_GLAM_TOOLS=0` makes the extension register no renderers,
+so Pi's default rendering is used unchanged. To keep the package installed but load none of
 its extensions, filter it in settings:
 
 ```json
 {
   "packages": [
-    { "source": "npm:ayla-tools-compact", "extensions": [] }
+    { "source": "git:github.com/kekma-dot/ayla-tools-compact", "extensions": [] }
   ]
 }
 ```
@@ -118,11 +117,13 @@ effect there beyond registration.
 
 - The extension opens no sockets, spawns no processes of its own, and reads exactly one
   environment variable (`PI_GLAM_TOOLS`).
-- Execution is delegated to Pi's built-in tool definitions, so permission rules,
-  approval prompts, sandboxing, and result shapes are unchanged.
+- It cannot change what a tool does: no tool is registered, so execution, permission
+  rules, approval prompts, sandboxing, and result shapes cannot be replaced. Another
+  extension's custom executor — a sandboxed `bash`, for example — keeps running; only the
+  drawn row changes.
 - No telemetry, no background timers, no writes outside Pi's own session storage.
-- Registering replacements for built-in names is visible to any extension that inspects
-  the tool definitions.
+- The renderer applies to the five names above for every extension, decided by load order;
+  remove or disable the package to get the host rendering back.
 
 ## Compatibility
 
@@ -131,9 +132,11 @@ requires; that is a module-mapping contract, **not** a compatibility guarantee.
 
 Verified: `@earendil-works/pi-coding-agent` `1.3.0` with `@earendil-works/pi-tui`
 `1.3.0`, loaded through Pi's real `DefaultResourceLoader` and a real `AgentSession` on
-macOS with Node 25.9.0 (see [Development](#development)). Other Pi versions are
-untested: the extension relies on `pi.registerTool`, `renderShell: "self"`,
-`renderCall`/`renderResult`, and the state semantics of `ToolRenderContext`. If a future host changes those, this package must be
+macOS with Node 25.9.0 (see [Development](#development)). **That is the only tested
+baseline.** Other Pi versions are untested and no compatibility is promised for them: the
+extension relies on `pi.registerToolRenderer`, the `ToolRendererResolver` contract
+(`next()` delegation), `ToolRenderers` with `renderShell: "self"`, and the state semantics
+of `ToolRenderContext`. If a host release changes any of those, this package must be
 re-verified and re-released.
 
 ## Limitations
@@ -145,6 +148,8 @@ re-verified and re-released.
 - Colored output loses its color because ANSI sequences are stripped.
 - Rendering is a terminal feature: it does not reduce the tokens sent to the model.
 - Beta: rendering depends on host internals that are public API but still young.
+- A renderer resolver can be overridden by extension load order; it is not a per-tool
+  setting.
 
 ## Development
 
@@ -161,17 +166,24 @@ The test suite is deliberately small and is expected to fail if the rendering co
 drifts:
 
 - `tests/registration.test.mjs` — packs the package with `npm pack`, unpacks the real
-  artifact, loads it through Pi's `DefaultResourceLoader`, checks the five registered
-  definitions and their `renderShell: "self"`, checks that a real `AgentSession` resolves
-  those definitions over the built-ins, and checks that `PI_GLAM_TOOLS=0` registers
-  nothing. It also asserts the tarball inventory contains no dependencies or tests.
+  artifact, loads it through Pi's `DefaultResourceLoader`, and checks that the extension
+  registers zero tools and exactly one renderer resolver; that the resolver covers the
+  five names with `renderShell: "self"` and delegates every other name (including
+  `toString`, `constructor` and `__proto__`) to `next()` exactly once; that a real
+  `AgentSession` keeps its own definitions and active set; and that `PI_GLAM_TOOLS=0` or
+  an empty extension list registers nothing. It also asserts the tarball inventory
+  contains no dependencies or tests.
 - `tests/rendering.test.mjs` — drives the actual renderers: one-row headers, preview
   bounds (5 / 9 / 400), tail versus head, counters and timing, partial results, argument
-  refresh, control-character flattening, ANSI stripping, and width safety for CJK, emoji,
-  and combining marks.
-- `tests/delegation.test.mjs` — executes through the registered definitions in a temp
-  directory: cwd propagation, host context (`PI_SESSION_ID`), exit-code errors, relative
-  paths for `read`/`ls`, and delegate reuse.
+  refresh, control-character flattening (C0 and C1), ANSI stripping, width safety for
+  CJK, emoji and combining marks at every width from 1 to 20 columns, and that the tool
+  result object is never mutated.
+- `tests/delegation.test.mjs` — the regression suite. It registers a custom `bash` with
+  its own schema and executor *before* this extension in a real loader and session, then
+  asserts that the same definition object, its schema and its executor survive, that the
+  built-in `bash`/`read`/`ls` still execute normally (cwd propagation, host context,
+  exit-code errors, relative paths), and that only a renderer was added. The previous
+  implementation, which re-registered the five tools, fails this test.
 
 CI is configured to run `npm ci`, `npm run check`, and `npm test` on Ubuntu and macOS
 with Node 24. Local verification used Node 25.9.0; the suite needs only `node:test` and

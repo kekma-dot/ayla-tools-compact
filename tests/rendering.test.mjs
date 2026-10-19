@@ -4,16 +4,22 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { devEntry, isolatedRoot, loadExtension } from "./helpers/load.mjs";
 
 const root = isolatedRoot("ayla-tools-compact-render-");
-const { definitions } = await loadExtension(devEntry, root);
+const { definitions, resolveRenderers } = await loadExtension(devEntry, root);
 
 /** Only fg() is used by the extension; identity styling keeps widths measurable. */
 const theme = { fg: (_role, text) => text };
 
 const textResult = (text) => ({ content: [{ type: "text", text }] });
 
+/** Whatever the tool definition would draw on its own; the resolver chain must end here. */
+const hostRenderers = { renderShell: "default", renderCall: () => ({ render: () => ["host-call"], invalidate() {} }), renderResult: () => ({ render: () => ["host-result"], invalidate() {} }) };
+
 function mount(name, args, result, options = {}) {
-	const tool = definitions.get(name);
-	assert.ok(tool, `${name} must be registered`);
+	assert.equal(definitions.size, 0, "the compact rows come from the renderer resolver, not from a registered tool");
+	const tool = resolveRenderers(name, () => hostRenderers);
+	assert.ok(tool, `${name} must get a renderer`);
+	assert.notEqual(tool, hostRenderers, `${name} must be drawn by the compact resolver`);
+	assert.equal(tool.renderShell, "self", `${name} must draw its own frame`);
 	const context = {
 		state: {},
 		args,
@@ -105,18 +111,18 @@ test("header state follows the newest arguments object", () => {
 	const view = mount("bash", { command: "first" }, textResult("ok"));
 	view.head(80);
 	const updated = { command: "second --with-flag" };
-	const next = definitions.get("bash").renderCall(updated, theme, view.context);
+	const next = resolveRenderers("bash", () => hostRenderers).renderCall(updated, theme, view.context);
 	assert.equal(next, view.context.state.head, "the same component is reused");
 	assert.match(next.render(80)[0], /\$ second --with-flag/);
 });
 
 test("control characters stay inside one rendered row", () => {
-	const view = mount("bash", { command: "echo a\nrm -rf b\r\tc" }, textResult("x\ry\n"));
+	const view = mount("bash", { command: "echo a\nrm -rf b\r\tc\u009d" }, textResult("x\ry\u009b\n"));
 	const header = view.head(80);
 	assert.equal(header.length, 1);
-	assert.ok(!/[\u0000-\u001f\u007f]/.test(header[0]), "no control character may reach the terminal");
+	assert.ok(!/[\u0000-\u001f\u007f-\u009f]/.test(header[0]), "no C0/C1 control character may reach the terminal");
 	assert.match(header[0], /^✓ \$ echo a rm -rf b c( {2}0\.\ds)?$/);
-	for (const line of view.body(80)) assert.ok(!/[\u0000-\u001f\u007f]/.test(line));
+	for (const line of view.body(80)) assert.ok(!/[\u0000-\u001f\u007f-\u009f]/.test(line));
 });
 
 test("foreign ANSI color is stripped from output", () => {
@@ -140,10 +146,10 @@ test("wide and combining characters never exceed the render width", () => {
 	assert.ok(visibleWidth(header) <= 16, "the header is truncated, not wrapped");
 });
 
-test("preview hints and output fit even a one-column terminal", () => {
+test("preview hints and output fit every width from one to twenty columns", () => {
 	for (const name of ["bash", "ls"]) {
 		const view = mount(name, { command: "long", path: "." }, textResult(lines(30).join("\n")));
-		for (const width of [1, 2, 5, 8, 10, 16, 20]) {
+		for (let width = 1; width <= 20; width += 1) {
 			for (const row of [...view.head(width), ...view.body(width)]) {
 				assert.ok(visibleWidth(row) <= width, `${name} row must fit ${width} columns`);
 			}
@@ -154,4 +160,27 @@ test("preview hints and output fit even a one-column terminal", () => {
 test("empty output renders no body rows", () => {
 	const view = mount("bash", { command: "true" }, textResult("\n"));
 	assert.deepEqual(view.body(80), []);
+});
+
+test("rendering never mutates the tool result it is given", () => {
+	const result = textResult("a\nb\nc");
+	result.details = { exit_code: 0 };
+	const deepFreeze = (value) => {
+		if (value && typeof value === "object") {
+			for (const inner of Object.values(value)) deepFreeze(inner);
+			Object.freeze(value);
+		}
+		return value;
+	};
+	const frozen = deepFreeze(result);
+	const before = JSON.stringify(frozen);
+	const view = mount("bash", { command: "seq 1 3" }, frozen);
+	assert.deepEqual(view.body(80), ["  a", "  b", "  c"]);
+	assert.equal(JSON.stringify(frozen), before, "the result object stays exactly as the host handed it over");
+});
+
+test("an unknown tool name keeps the host renderers", () => {
+	const resolved = resolveRenderers("write", () => hostRenderers);
+	assert.equal(resolved, hostRenderers, "a name outside the five must fall through to next()");
+	assert.equal(resolveRenderers("write"), undefined, "with nothing behind it, next() stays empty");
 });

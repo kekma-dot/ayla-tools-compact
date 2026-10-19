@@ -36,10 +36,22 @@ export async function loadExtension(entry, root) {
 	await loader.reload();
 	const loaded = loader.getExtensions();
 	const definitions = new Map();
+	const resolvers = [];
 	for (const extension of loaded.extensions) {
 		for (const tool of extension.tools.values()) {
 			definitions.set(tool.definition.name, tool.definition);
 		}
+		resolvers.push(...(extension.toolRenderers ?? []));
 	}
-	return { loader, loaded, definitions };
+	/**
+	 * Same order the host uses (extension load order, `next()` walks the rest and
+	 * finally the registered definition's own renderers). `base` stands in for
+	 * whatever the tool definition would draw.
+	 */
+	const resolveRenderers = (name, base = () => undefined) =>
+		resolvers.reduceRight(
+			(next, resolver) => () => resolver(name, next),
+			base,
+		)();
+	return { loader, loaded, definitions, resolvers, resolveRenderers };
 }

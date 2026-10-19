@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isolatedRoot, loadExtension, sdk } from "./helpers/load.mjs";
 import { stagePackage } from "./helpers/stage.mjs";
 
-const EXPECTED_TOOLS = ["bash", "find", "grep", "ls", "read"];
+const EXPECTED_NAMES = ["bash", "find", "grep", "ls", "read"];
+
+/** Stands in for whatever the registered definition would draw on its own. */
+const HOST_RENDERERS = { renderShell: "default", renderCall: () => "host-call", renderResult: () => "host-result" };
 
 const staged = stagePackage();
 const root = isolatedRoot("ayla-tools-compact-registration-");
@@ -51,51 +54,126 @@ test("publish artifact ships only declared files", () => {
 	}
 });
 
-test("staged artifact registers exactly the five compact tool rows", async () => {
-	const { loaded, definitions } = await loadExtension(staged.entry, root);
+test("the extension registers a renderer resolver, never a tool", async () => {
+	const { loaded, definitions, resolvers } = await loadExtension(staged.entry, root);
 	assert.deepEqual(loaded.errors, []);
 	assert.equal(loaded.extensions.length, 1);
-	assert.deepEqual([...definitions.keys()].sort(), EXPECTED_TOOLS);
-	for (const [name, definition] of definitions) {
-		assert.equal(definition.name, name);
-		assert.equal(definition.renderShell, "self", `${name} must draw its own frame`);
-		assert.equal(typeof definition.renderCall, "function", `${name} needs renderCall`);
-		assert.equal(typeof definition.renderResult, "function", `${name} needs renderResult`);
-		assert.equal(typeof definition.execute, "function", `${name} needs execute`);
-		assert.equal(typeof definition.parameters, "object");
-		assert.ok(definition.parameters !== null && !Array.isArray(definition.parameters));
-		assert.ok(definition.description.length > 0, `${name} keeps the built-in description`);
+	assert.equal(definitions.size, 0, "no tool definition may be registered: execution and schemas stay with the host");
+	assert.equal(resolvers.length, 1, "exactly one renderer resolver");
+});
+
+test("the resolver covers the five compact rows and delegates every other name", async () => {
+	const { resolveRenderers } = await loadExtension(staged.entry, root);
+	for (const name of EXPECTED_NAMES) {
+		const renderers = resolveRenderers(name, () => HOST_RENDERERS);
+		assert.ok(renderers, `${name} needs compact renderers`);
+		assert.notEqual(renderers, HOST_RENDERERS);
+		assert.equal(renderers.renderShell, "self", `${name} must draw its own frame`);
+		assert.equal(typeof renderers.renderCall, "function", `${name} needs renderCall`);
+		assert.equal(typeof renderers.renderResult, "function", `${name} needs renderResult`);
+		assert.equal(renderers.execute, undefined, `${name} must not carry an executor`);
+		assert.equal(renderers.parameters, undefined, `${name} must not carry a schema`);
+	}
+	for (const name of ["write", "edit", "resolve_preview", "custom_tool"]) {
+		assert.equal(resolveRenderers(name, () => HOST_RENDERERS), HOST_RENDERERS, `${name} must delegate to next()`);
 	}
 });
 
-test("the host resolves the registered definitions over the built-ins", async () => {
-	const { loader, definitions } = await loadExtension(staged.entry, root);
-	const { session, extensionsResult } = await sdk.createAgentSession({
-		cwd: root.cwd,
-		agentDir: root.agentDir,
-		resourceLoader: loader,
-		sessionManager: sdk.SessionManager.inMemory(),
-		settingsManager: sdk.SettingsManager.inMemory(),
-	});
+test("object-prototype names fall through next() exactly once", async () => {
+	const { resolveRenderers } = await loadExtension(staged.entry, root);
+	for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty", "valueOf", "write"]) {
+		let calls = 0;
+		const renderers = resolveRenderers(name, () => {
+			calls += 1;
+			return HOST_RENDERERS;
+		});
+		assert.equal(renderers, HOST_RENDERERS, `${name} must not be captured by an inherited property`);
+		assert.equal(calls, 1, `${name} must call next() exactly once`);
+	}
+});
+
+test("the host's tool definitions and active set are untouched", async () => {
+	const open = async (additionalExtensionPaths, name) => {
+		const dir = join(root.root, name);
+		mkdirSync(dir);
+		const agentDir = join(dir, "agent");
+		const cwd = join(dir, "work");
+		mkdirSync(agentDir);
+		mkdirSync(cwd);
+		const loader = new sdk.DefaultResourceLoader({
+			cwd,
+			agentDir,
+			noExtensions: true,
+			noSkills: true,
+			noThemes: true,
+			noContextFiles: true,
+			noPromptTemplates: true,
+			additionalExtensionPaths,
+			settingsManager: sdk.SettingsManager.inMemory(),
+			agentsFilesOverride: () => ({ agentsFiles: [] }),
+		});
+		await loader.reload();
+		const { session, extensionsResult } = await sdk.createAgentSession({
+			cwd,
+			agentDir,
+			resourceLoader: loader,
+			sessionManager: sdk.SessionManager.inMemory(),
+			settingsManager: sdk.SettingsManager.inMemory(),
+		});
+		return { session, extensionsResult };
+	};
+
+	const bare = await open([], "nested-bare");
+	const compact = await open([staged.entry], "nested-compact");
 	try {
-		assert.deepEqual(extensionsResult.errors, []);
-		for (const name of EXPECTED_TOOLS) {
-			assert.equal(session.getToolDefinition(name), definitions.get(name), `${name} must resolve to the compact registration`);
+		assert.deepEqual(compact.extensionsResult.errors, []);
+		assert.deepEqual(compact.session.getActiveToolNames().sort(), bare.session.getActiveToolNames().sort(), "the active tool set must not change");
+		for (const name of EXPECTED_NAMES) {
+			const definition = compact.session.getToolDefinition(name);
+			assert.ok(definition, `${name} must still exist`);
+			assert.equal(typeof definition.execute, "function", `${name} keeps its own executor`);
+			assert.equal(definition.renderShell, undefined, `${name} keeps the host definition, not a compact one`);
+			assert.deepEqual(
+				JSON.parse(JSON.stringify(definition.parameters)),
+				JSON.parse(JSON.stringify(bare.session.getToolDefinition(name).parameters)),
+				`${name} keeps the host schema`,
+			);
 		}
-		const active = session.getActiveToolNames();
-		for (const name of EXPECTED_TOOLS) assert.ok(active.includes(name), `${name} must stay active`);
 	} finally {
-		await session.dispose();
+		await compact.session.dispose();
+		await bare.session.dispose();
 	}
 });
 
-test("PI_GLAM_TOOLS=0 leaves the built-in rendering untouched", async () => {
+test("PI_GLAM_TOOLS=0 registers nothing at all", async () => {
 	process.env.PI_GLAM_TOOLS = "0";
 	try {
-		const { loaded, definitions } = await loadExtension(staged.entry, root);
+		const { loaded, definitions, resolvers } = await loadExtension(staged.entry, root);
 		assert.deepEqual(loaded.errors, []);
-		assert.equal(definitions.size, 0, "the extension must register no tools when disabled");
+		assert.equal(definitions.size, 0, "no tool may be registered when disabled");
+		assert.equal(resolvers.length, 0, "no renderer may be registered when disabled");
 	} finally {
 		delete process.env.PI_GLAM_TOOLS;
 	}
+});
+
+test("an extension list without this package leaves the built-in rendering alone", async () => {
+	const bare = isolatedRoot("ayla-tools-compact-bare-");
+	const loader = new sdk.DefaultResourceLoader({
+		cwd: bare.cwd,
+		agentDir: bare.agentDir,
+		noExtensions: true,
+		noSkills: true,
+		noThemes: true,
+		noContextFiles: true,
+		noPromptTemplates: true,
+		additionalExtensionPaths: [],
+		settingsManager: sdk.SettingsManager.inMemory(),
+		agentsFilesOverride: () => ({ agentsFiles: [] }),
+	});
+	await loader.reload();
+	const loaded = loader.getExtensions();
+	assert.deepEqual(loaded.errors, []);
+	assert.equal(loaded.extensions.length, 0, "extensions: [] loads nothing");
+	assert.equal(loaded.extensions.flatMap((extension) => extension.toolRenderers ?? []).length, 0);
 });
