@@ -4,14 +4,7 @@
 
 **English** · [Русский](README.ru.md)
 
-Compact, one-line tool rows for [Pi](https://pi.dev) — a rendering-only extension for
-`bash`, `read`, `grep`, `find`, and `ls`.
-
-> **Status: public beta (`0.1.0-beta.2`).** Verified against Pi `1.3.0` only. See
-> [Compatibility](#compatibility) for what that claim does and does not cover.
-
-Instead of a full-width colored block per tool call, every call becomes a single row:
-a status glyph, the tool verb, its arguments, and the useful part of the output.
+One-line tool rows for [Pi](https://pi.dev). `bash`, `read`, `grep`, `find` and `ls` draw as a single line instead of a full-width block.
 
 ```text
 ✓ $ pwd && whoami && date 0.0s
@@ -27,61 +20,42 @@ a status glyph, the tool verb, its arguments, and the useful part of the output.
   … +7 lines · ctrl+o
 ```
 
-Collapsed rows show 5 output lines (9 for a failed call); `ctrl+o` expands to at most
-400 lines. A shell call is timed and shows the **tail** of its output, where errors
-live; file-oriented tools show the **head**.
-
-## What it changes — and what it does not
-
-| | |
-|---|---|
-| Changed | How `bash`, `read`, `grep`, `find`, and `ls` calls and results are drawn. |
-| Not changed | Tool names, descriptions, parameter schemas, execution, permissions, result payloads, session storage. |
-| Not covered | `edit`, `write`, and every other tool keep Pi's default rendering. |
-
-The extension registers no tools at all. It registers one **renderer resolver** through
-Pi's public `pi.registerToolRenderer` hook: for the five names above it returns a compact
-`renderCall`/`renderResult` with `renderShell: "self"`, and for every other name it
-calls `next()`, so the rest of the chain decides. Execution, parameter schemas, exposure,
-annotations, and the active tool set are never touched, which also means a custom or
-sandboxed `bash` registered by another extension keeps its own definition and executor
-and only gains the compact row.
+A collapsed row shows 5 output lines, or 9 when the call failed. `ctrl+o` expands to at most 400 lines. Shell calls show elapsed time and the end of their output, where errors usually are; the file tools show the beginning.
 
 ## Install
 
-Requires a working Pi installation. The extension itself has no runtime dependencies;
-`@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` are host-provided peers.
+Needs Pi 1.3.0, which is the tested baseline. Other Pi versions are untested. The host packages `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` come from Pi itself, so the extension has no runtime dependencies.
 
-```bash
+```sh
+# from git
 pi install git:github.com/kekma-dot/ayla-tools-compact
+
+# pinned
+pi install git:github.com/kekma-dot/ayla-tools-compact@<commit>
+
+# local checkout
+pi install ./ayla-tools-compact
 ```
 
-Restart Pi after installation. This package is not published to npm. For reproducible
-installs, append `@<commit>` to the Git source using a verified release commit. A local
-checkout also works: `pi install ./ayla-tools-compact`.
+Restart Pi or run `/reload` after installing.
 
-Try it for one session without adding it to settings:
+## What it changes
 
-```bash
-pi -e git:github.com/kekma-dot/ayla-tools-compact
+Only the drawing. The extension adds one renderer resolver through the public `pi.registerToolRenderer` hook. For the five names above it returns `renderCall` and `renderResult` with `renderShell: "self"`. For every other name it calls `next()` and leaves the row to Pi.
+
+It registers no tools, so execution, parameter schemas, permissions and the active tool set stay exactly as Pi set them. A custom or sandboxed `bash` registered by another extension keeps its own executor and schema and just draws with the compact row.
+
+Because the resolver works per tool name, two extensions that draw the same names decide the result by load order. Remove or disable this package to get Pi's rendering back.
+
+## Settings
+
+`PI_GLAM_TOOLS=0` turns the drawing off for one run. The variable name is kept from earlier versions of the package.
+
+```sh
+PI_GLAM_TOOLS=0 pi
 ```
 
-`pi list` shows configured packages. Personal installs land in `~/.pi/agent/settings.json`;
-`--local` writes to `.pi/settings.json` instead, which Pi reads only after project trust
-is granted.
-
-## Disable, filter, uninstall
-
-```bash
-PI_GLAM_TOOLS=0 pi                 # one run, nothing drawn by this extension
-pi config                          # toggle the package's extension interactively
-pi remove git:github.com/kekma-dot/ayla-tools-compact  # remove the package declaration
-```
-
-The environment switch is named `PI_GLAM_TOOLS` for compatibility with earlier installs
-and is intentionally stable; `PI_GLAM_TOOLS=0` makes the extension register no renderers,
-so Pi's default rendering is used unchanged. To keep the package installed but load none of
-its extensions, filter it in settings:
+`pi config` toggles the extension. To keep the package installed but load nothing from it:
 
 ```json
 {
@@ -91,111 +65,39 @@ its extensions, filter it in settings:
 }
 ```
 
-After removing a package, restart Pi so the built-in renderers are restored.
+To uninstall, run `pi remove git:github.com/kekma-dot/ayla-tools-compact` and restart Pi.
 
-## Behavior details
+## Behavior
 
-| Case | Rendering |
+| Case | Row |
 |---|---|
-| Collapsed | 5 output lines plus `… +N lines · ctrl+o` — before a tail, after a head. |
-| Expanded (`ctrl+o`) | Up to 400 lines; the remaining count is still reported. |
-| Failed call (`isError`) | 9 preview lines and a `✗` glyph; the shell row shows the error tail. |
-| Shell (`bash`) | Timed (`0.1s`, measured from execution start to the final result), output tail. |
-| `read` | `path:from-to` when `offset`/`limit` is used, plus a `lines` counter. |
-| `grep`, `find`, `ls` | Argument summary plus a `matches`/`entries` counter. |
-| Wide output | Every row is truncated to the terminal width; nothing wraps inside a row. |
-| ANSI color in output | Stripped, so third-party color cannot break indentation or width. |
-| Tabs | Rendered as two spaces. |
-| Control characters | Flattened to spaces before drawing, including inside a multi-line shell command. |
-| Empty output | No body rows. |
+| Collapsed | 5 output lines plus `… +N lines · ctrl+o`, before a tail and after a head |
+| Expanded (`ctrl+o`) | Up to 400 lines, with the remaining count |
+| Failed call | 9 preview lines and a `✗` glyph; the shell row shows the error end |
+| `bash` | Timed from execution start to the final result, output tail |
+| `read` | `path:from-to` when `offset` or `limit` is used, plus a line count |
+| `grep`, `find`, `ls` | Argument summary plus a match or entry count |
+| Empty output | No body rows |
 
-Rendering is used in the interactive transcript and in Pi's HTML transcript export.
-Non-interactive modes (`--print`, RPC) have no tool rows to draw, so the extension has no
-effect there beyond registration.
+## Limits
 
-## Security
-
-- The extension opens no sockets, spawns no processes of its own, and reads exactly one
-  environment variable (`PI_GLAM_TOOLS`).
-- It cannot change what a tool does: no tool is registered, so execution, permission
-  rules, approval prompts, sandboxing, and result shapes cannot be replaced. Another
-  extension's custom executor — a sandboxed `bash`, for example — keeps running; only the
-  drawn row changes.
-- No telemetry, no background timers, no writes outside Pi's own session storage.
-- The renderer applies to the five names above for every extension, decided by load order;
-  remove or disable the package to get the host rendering back.
-
-## Compatibility
-
-`peerDependencies` declare `"*"` for the host packages, as Pi's package documentation
-requires; that is a module-mapping contract, **not** a compatibility guarantee.
-
-Verified: `@earendil-works/pi-coding-agent` `1.3.0` with `@earendil-works/pi-tui`
-`1.3.0`, loaded through Pi's real `DefaultResourceLoader` and a real `AgentSession` on
-macOS with Node 25.9.0 (see [Development](#development)). **That is the only tested
-baseline.** Other Pi versions are untested and no compatibility is promised for them: the
-extension relies on `pi.registerToolRenderer`, the `ToolRendererResolver` contract
-(`next()` delegation), `ToolRenderers` with `renderShell: "self"`, and the state semantics
-of `ToolRenderContext`. If a host release changes any of those, this package must be
-re-verified and re-released.
-
-## Limitations
-
-- Only five tools are restyled; `edit` and `write` are out of scope.
-- Preview sizes, the expanded cap, and glyphs are fixed in the source; there are no
-  settings, and changing them means editing or forking the extension.
-- Line counters count output lines, not semantic matches.
-- Colored output loses its color because ANSI sequences are stripped.
-- Rendering is a terminal feature: it does not reduce the tokens sent to the model.
-- Beta: rendering depends on host internals that are public API but still young.
-- A renderer resolver can be overridden by extension load order; it is not a per-tool
-  setting.
+- Only those five tools are restyled. `edit` and `write` keep Pi's rendering.
+- Preview sizes, the 400-line cap and the glyphs are constants in the source, so changing them means editing the extension.
+- Counters count output lines, not matches.
+- ANSI color in tool output is stripped, so colored output loses its color.
+- Every row is truncated to the terminal width, including wide characters and control characters.
+- This is a terminal feature. It does not change what the model receives.
 
 ## Development
 
-Development needs Node 22.19+ (CI uses Node 24); the published extension is loaded by
-Pi's own TypeScript loader, so it adds no Node requirement of its own.
-
-```bash
+```sh
 npm ci
-npm run check   # TypeScript against the exact Pi 1.3.0 declarations
-npm test        # node:test, no test framework
+npm run check   # TypeScript against Pi 1.3.0 declarations
+npm test        # node:test
 ```
 
-The test suite is deliberately small and is expected to fail if the rendering contract
-drifts:
-
-- `tests/registration.test.mjs` — packs the package with `npm pack`, unpacks the real
-  artifact, loads it through Pi's `DefaultResourceLoader`, and checks that the extension
-  registers zero tools and exactly one renderer resolver; that the resolver covers the
-  five names with `renderShell: "self"` and delegates every other name (including
-  `toString`, `constructor` and `__proto__`) to `next()` exactly once; that a real
-  `AgentSession` keeps its own definitions and active set; and that `PI_GLAM_TOOLS=0` or
-  an empty extension list registers nothing. It also asserts the tarball inventory
-  contains no dependencies or tests.
-- `tests/rendering.test.mjs` — drives the actual renderers: one-row headers, preview
-  bounds (5 / 9 / 400), tail versus head, counters and timing, partial results, argument
-  refresh, control-character flattening (C0 and C1), ANSI stripping, width safety for
-  CJK, emoji and combining marks at every width from 1 to 20 columns, and that the tool
-  result object is never mutated.
-- `tests/delegation.test.mjs` — the regression suite. It registers a custom `bash` with
-  its own schema and executor *before* this extension in a real loader and session, then
-  asserts that the same definition object, its schema and its executor survive, that the
-  built-in `bash`/`read`/`ls` still execute normally (cwd propagation, host context,
-  exit-code errors, relative paths), and that only a renderer was added. The previous
-  implementation, which re-registered the five tools, fails this test.
-
-CI is configured to run `npm ci`, `npm run check`, and `npm test` on Ubuntu and macOS
-with Node 24. Local verification used Node 25.9.0; the suite needs only `node:test` and
-Pi's own loader, both independent of the Node version in that range.
-
-## Uninstall and rollback
-
-`pi remove <source>` (or deleting the entry from settings, or `PI_GLAM_TOOLS=0`) restores
-Pi's default rendering. The package writes nothing outside Pi's normal package directory,
-so rollback needs no cleanup.
+`npm test` packs the package, unpacks the real artifact, loads it through Pi's `DefaultResourceLoader` and drives the renderers, including the case where another extension registered its own `bash` first.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Original author: kekma-dot. The package is a curated public
-snapshot; snapshot provenance is recorded in [provenance.json](provenance.json).
+MIT, see [LICENSE](LICENSE). Author: kekma-dot. Provenance is recorded in [provenance.json](provenance.json).
