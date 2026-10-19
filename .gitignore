@@ -1,0 +1,4 @@
+node_modules/
+*.tgz
+.scratch/
+.DS_Store
