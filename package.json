@@ -3,6 +3,7 @@
   "version": "0.1.0-beta.1",
   "description": "Compact one-line rendering for Pi's built-in tools (bash, read, grep, find, ls). Rendering-only extension: execution stays in Pi.",
   "type": "module",
+  "engines": { "node": ">=22.19.0" },
   "license": "MIT",
   "author": "kekma-dot",
   "keywords": [

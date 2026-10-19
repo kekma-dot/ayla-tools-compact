@@ -148,7 +148,7 @@ re-verified and re-released.
 
 ## Development
 
-Development needs Node 22.18+ (CI uses Node 24); the published extension is loaded by
+Development needs Node 22.19+ (CI uses Node 24); the published extension is loaded by
 Pi's own TypeScript loader, so it adds no Node requirement of its own.
 
 ```bash
